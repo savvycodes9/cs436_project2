@@ -6,41 +6,62 @@ import sys
 def listen():
     try:
         while True:
+            
             # Wait for query
-
+            data, address = udp_connection.receive_message()
             # Check RR table for record
-
+            name, type_ = deserialize(data)
+            if not name or not type_:
+                print("Invalid query format recieved.")
+                continue
+            record = rr_table.get_record(name, type_)
+        
             # If not found, add "Record not found" in the DNS response
             # Else, return record in DNS response
-
+            if record is None:
+                response = f"{name}, {type_}, Record not found"
+            else: 
+                response = serialize(record)
             # The format of the DNS query and response is in the project description
-
+            udp_connection.send_message(response, address)
             # Display RR table
+            rr_table.display_table()
             pass
     except KeyboardInterrupt:
         print("Keyboard interrupt received, exiting...")
     finally:
         # Close UDP socket
+        udp_connection.close()
         pass
 
 
 def main():
     # Add initial records
     # These can be found in the test cases diagram
+    global rr_table, udp_connection
+    rr_table = RRTable()
+    rr_table.add_record("example.com", "A", "1.2.3.4", 3600, True)
+    rr_table.add_record("example.com", "AAAA", "abcd::1", 3600, True)
 
     amazone_dns_address = ("127.0.0.1", 22000)
     # Bind address to UDP socket
-
+    udp_connection = UDPConnection()
+    udp_connection.bind(amazone_dns_address)
     listen()
 
 
 def serialize():
+    return f'{record["name"]}, {record["type"]}, {record["result"]}, {record["ttl"]}, {record["static"]}'
     # Consider creating a serialize function
     # This can help prepare data to send through the socket
     pass
 
 
 def deserialize():
+    parts = data.split(",")
+    if len(parts) < 2:
+        return None, None
+    return parts[0], parts[1]
     # Consider creating a deserialize function
     # This can help prepare data that is received from the socket
     pass
@@ -48,16 +69,34 @@ def deserialize():
 
 class RRTable:
     def __init__(self):
-        # self.records = ?
+        self.records = []
         self.record_number = 0
 
-    def add_record(self):
+    def add_record(self, name, type_, result, ttl, static):
+        self.record_nume +=1
+        self.records.append({
+            "record_number" : self.record_number,
+            "name": name, 
+            "type": type_,
+            "result": result,
+            "ttl": ttl,
+            "static": static 
+
+        })
         pass
 
-    def get_record(self):
+    def get_record(self, name, type_):
+        for record in self.records:
+            if record["name"] == name and record["type"] == type_:
+                return record
+            return None
         pass
 
-    def display_table(self):
+    def display_table(self, name, type_):
+        print("record_number, name, type, result, ttl, static")
+        for r in self.records:
+            print(f'{r["records_number"]}, {r["name"]},{r["type"]}, {r["result"]}, {r["ttl"]}, {r["static"]}')
+            print("-" * 50)
         # Display the table in the following format (include the column names):
         # record_number,name,type,result,ttl,static
         pass

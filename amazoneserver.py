@@ -1,47 +1,82 @@
 import errno
 import socket
 import sys
-
+import json
+import time
 
 def listen():
     try:
         while True:
-            
             # Wait for query
+            time.sleep(1)
             data, address = udp_connection.receive_message()
+            time.sleep(1)
+            
             # Check RR table for record
-            name, type_ = deserialize(data)
-            if not name or not type_:
-                print("Invalid query format recieved.")
+            msg = deserialize(data)
+
+            # Validate the incoming JSON query
+            if not isinstance(msg, dict) or msg.get("flag") != "0000" or "question" not in msg or "txid" not in msg:
+                print(f"Invalid query format recieved from {address}")
                 continue
+
+            # Get query details from the JSON
+            client_txid = msg.get("txid")
+            question = msg.get("question", {})
+            name = question.get("name")
+            type_ = question.get("type")
+
+            if not name or not type_:
+                print(f"Invalid query (missing name/type) from {address}")
+                continue
+                
             record = rr_table.get_record(name, type_)
-        
-            # If not found, add "Record not found" in the DNS response
-            # Else, return record in DNS response
+            time.sleep(1)
+            
+            # Build the JSON response
+            response_msg = {
+                "txid": client_txid,
+                "flag": "0001"  # This is a response
+            }
+
             if record is None:
-                response = f"{name}, {type_}, Record not found"
+                response_msg["answer"] = {
+                    "name": name,
+                    "type": type_,
+                    "ttl": 0, # TTL doesn't matter for "not found"
+                    "result": "Record not found"
+                }
             else: 
-                response = serialize(record)
-            # The format of the DNS query and response is in the project description
-            udp_connection.send_message(response, address)
+                # Use the data from the found record
+                response_msg["answer"] = {
+                    "name": record["name"],
+                    "type": record["type"],
+                    # Use a default TTL if the static record has 'None'
+                    "ttl": 60 if record["ttl"] is None else record["ttl"], 
+                    "result": record["result"]
+                }
+            
+            # Serialize the entire response dictionary and send it
+            response_str = serialize(response_msg)
+            udp_connection.send_message(response_str, address)
+            
             # Display RR table
+            print(f"\nHandled query for {name} from {address}")
             rr_table.display_table()
-            pass
+            
     except KeyboardInterrupt:
         print("Keyboard interrupt received, exiting...")
     finally:
         # Close UDP socket
         udp_connection.close()
-        pass
-
 
 def main():
     # Add initial records
     # These can be found in the test cases diagram
     global rr_table, udp_connection
     rr_table = RRTable()
-    rr_table.add_record("example.com", "A", "1.2.3.4", 3600, True)
-    rr_table.add_record("example.com", "AAAA", "abcd::1", 3600, True)
+    rr_table.add_record("shop.amazone.com", "A", "3.33.147.88", None, True)
+    rr_table.add_record("cloud.amazone.com", "A", "15.197.140.28", None, True)
 
     amazone_dns_address = ("127.0.0.1", 22000)
     # Bind address to UDP socket
@@ -50,21 +85,15 @@ def main():
     listen()
 
 
-def serialize():
-    return f'{record["name"]}, {record["type"]}, {record["result"]}, {record["ttl"]}, {record["static"]}'
-    # Consider creating a serialize function
-    # This can help prepare data to send through the socket
-    pass
+def serialize(message_dict):
+    return json.dumps(message_dict)
 
 
-def deserialize():
-    parts = data.split(",")
-    if len(parts) < 2:
-        return None, None
-    return parts[0], parts[1]
-    # Consider creating a deserialize function
-    # This can help prepare data that is received from the socket
-    pass
+def deserialize(data):
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError:
+        return None # Return None if JSON is invalid
 
 
 class RRTable:
@@ -73,29 +102,27 @@ class RRTable:
         self.record_number = 0
 
     def add_record(self, name, type_, result, ttl, static):
-        self.record_nume +=1
         self.records.append({
             "record_number" : self.record_number,
             "name": name, 
             "type": type_,
             "result": result,
             "ttl": ttl,
-            "static": static 
-
+            "static": 1 if static else 0 
         })
+        self.record_number += 1
         pass
 
     def get_record(self, name, type_):
         for record in self.records:
             if record["name"] == name and record["type"] == type_:
                 return record
-            return None
-        pass
+        return None
 
-    def display_table(self, name, type_):
+    def display_table(self): #, name, type_
         print("record_number, name, type, result, ttl, static")
         for r in self.records:
-            print(f'{r["records_number"]}, {r["name"]},{r["type"]}, {r["result"]}, {r["ttl"]}, {r["static"]}')
+            print(f'{r["record_number"]}, {r["name"]},{r["type"]}, {r["result"]}, {r["ttl"]}, {r["static"]}')
             print("-" * 50)
         # Display the table in the following format (include the column names):
         # record_number,name,type,result,ttl,static

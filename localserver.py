@@ -1,182 +1,195 @@
 import errno
+import json
 import socket
 import sys
 import threading
 import time
 
+# ---------- Config ----------
+LOCAL_BIND = ("127.0.0.1", 21000)
+AMAZON_ADDR = ("127.0.0.1", 22000)
+DEFAULT_TTL = 60
 
-def listen():
+# ---------- Helpers ----------
+def serialize(message):
+    return json.dumps(message, separators=(",", ":"))
+
+def deserialize(wire):
     try:
-        while True:
-            # Wait for query
-
-            # Check RR table for record
-
-            # If not found, ask the authoritative DNS server of the requested hostname/domain
-
-            # This means parsing the query to get the domain (e.g. amazone.com from shop.amazone.com)
-            # With the domain, you can do a self lookup to get the NS record of the domain (e.g. dns.amazone.com)
-            # With the server name, you can do a self lookup to get the IP address (e.g. 127.0.0.1)
-
-            # When sending a query to the authoritative DNS server, use port 22000
-
-            # Then save the record if valid
-            # Else, add "Record not found" in the DNS response
-
-            # The format of the DNS query and response is in the project description
-
-            # Display RR table
-            pass
-    except KeyboardInterrupt:
-        print("Keyboard interrupt received, exiting...")
-    finally:
-        # Close UDP socket
-        pass
-
-
-def main():
-    # Add initial records
-    # These can be found in the test cases diagram
-
-    local_dns_address = ("127.0.0.1", 21000)
-    # Bind address to UDP socket
-
-    listen()
-
-
-def serialize():
-    # Consider creating a serialize function
-    # This can help prepare data to send through the socket
-    pass
-
-
-def deserialize():
-    # Consider creating a deserialize function
-    # This can help prepare data that is received from the socket
-    pass
-
-
-class RRTable:
-    def __init__(self):
-        # self.records = ?
-        self.record_number = 0
-
-        # Start the background thread
-        self.lock = threading.Lock()
-        self.thread = threading.Thread(target=self.__decrement_ttl, daemon=True)
-        self.thread.start()
-
-    def add_record(self):
-        with self.lock:
-            pass
-
-    def get_record(self):
-        with self.lock:
-            pass
-
-    def display_table(self):
-        with self.lock:
-            # Display the table in the following format (include the column names):
-            # record_number,name,type,result,ttl,static
-            pass
-
-    def __decrement_ttl(self):
-        while True:
-            with self.lock:
-                # Decrement ttl
-                self.__remove_expired_records()
-            time.sleep(1)
-
-    def __remove_expired_records(self):
-        # This method is only called within a locked context
-
-        # Remove expired records
-        # Update record numbers
-        pass
-
+        return json.loads(wire)
+    except json.JSONDecodeError:
+        return {}
 
 class DNSTypes:
-    """
-    A class to manage DNS query types and their corresponding codes.
-
-    Examples:
-    >>> DNSTypes.get_type_code('A')
-    8
-    >>> DNSTypes.get_type_name(0b0100)
-    'AAAA'
-    """
-
-    name_to_code = {
-        "A": 0b1000,
-        "AAAA": 0b0100,
-        "CNAME": 0b0010,
-        "NS": 0b0001,
-    }
-
-    code_to_name = {code: name for name, code in name_to_code.items()}
-
+    name_to_code = {"A":0b1000,"AAAA":0b0100,"CNAME":0b0010,"NS":0b0001}
+    code_to_name = {v:k for k,v in name_to_code.items()}
     @staticmethod
-    def get_type_code(type_name: str):
-        """Gets the code for the given DNS query type name, or None"""
-        return DNSTypes.name_to_code.get(type_name, None)
-
+    def get_type_name(code:int): return DNSTypes.code_to_name.get(code)
     @staticmethod
-    def get_type_name(type_code: int):
-        """Gets the DNS query type name for the given code, or None"""
-        return DNSTypes.code_to_name.get(type_code, None)
-
+    def get_type_code(name:str): return DNSTypes.name_to_code.get(name)
 
 class UDPConnection:
-    """A class to handle UDP socket communication, capable of acting as both a client and a server."""
-
-    def __init__(self, timeout: int = 1):
-        """Initializes the UDPConnection instance with a timeout. Defaults to 1."""
+    def __init__(self, timeout:int=1):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.settimeout(timeout)
         self.is_bound = False
-
-    def send_message(self, message: str, address: tuple[str, int]):
-        """Sends a message to the specified address."""
+    def bind(self, address):
+        if not self.is_bound:
+            self.socket.bind(address); self.is_bound = True
+    def send_message(self, message:str, address:tuple[str,int]):
         self.socket.sendto(message.encode(), address)
-
     def receive_message(self):
-        """
-        Receives a message from the socket.
-
-        Returns:
-            tuple (data, address): The received message and the address it came from.
-
-        Raises:
-            KeyboardInterrupt: If the program is interrupted manually.
-        """
         while True:
             try:
-                data, address = self.socket.recvfrom(4096)
-                return data.decode(), address
+                data, addr = self.socket.recvfrom(4096)
+                return data.decode(), addr
             except socket.timeout:
                 continue
             except OSError as e:
                 if e.errno == errno.ECONNRESET:
-                    print("Error: Unable to reach the other socket. It might not be up and running.")
-                else:
-                    print(f"Socket error: {e}")
-                self.close()
-                sys.exit(1)
-            except KeyboardInterrupt:
+                    print("Peer unreachable (ECONNRESET)."); continue
                 raise
+    def close(self): self.socket.close()
 
-    def bind(self, address: tuple[str, int]):
-        """Binds the socket to the given address. This means it will be a server."""
-        if self.is_bound:
-            print(f"Socket is already bound to address: {self.socket.getsockname()}")
+class RRTable:
+    # record: {record_number,name,type,result,ttl,static}
+    def __init__(self):
+        self.records = []
+        self.record_number = 0
+        self.lock = threading.Lock()
+        t = threading.Thread(target=self.__decrement_ttl, daemon=True); t.start()
+    def add_record(self, name, rtype, result, ttl:int|None, is_static:bool):
+        with self.lock:
+            self.records.append({
+                "record_number": self.record_number,
+                "name": name,
+                "type": rtype,
+                "result": result,
+                "ttl": None if is_static else int(ttl or 0),
+                "static": 1 if is_static else 0
+            })
+            self.record_number += 1
+    def get_record(self, name, rtype):
+        with self.lock:
+            target = (name.lower(), rtype.upper())
+            for r in self.records:
+                if r["name"].lower()==target[0] and r["type"].upper()==target[1]:
+                    if r["static"]==1: return r
+                    if isinstance(r["ttl"],int) and r["ttl"]>0: return r
+            return None
+    def display_table(self):
+        with self.lock:
+            print("record_number,name,type,result,ttl,static")
+            for r in self.records:
+                ttl = "None" if r["ttl"] is None else r["ttl"]
+                print(f'{r["record_number"]},{r["name"]},{r["type"]},{r["result"]},{ttl},{r["static"]}')
+    def __decrement_ttl(self):
+        while True:
+            with self.lock:
+                for r in self.records:
+                    if r["static"]==0 and isinstance(r["ttl"],int) and r["ttl"]>0:
+                        r["ttl"] -= 1
+                self.records = [r for r in self.records if r["static"]==1 or (isinstance(r["ttl"],int) and r["ttl"]>0)]
+                for i,r in enumerate(self.records): r["record_number"]=i
+                self.record_number = len(self.records)
+            time.sleep(1)
+
+# ---------- Authoritative seed for CSUSM ----------
+def seed_authoritative_csusm(rr: RRTable):
+    rr.add_record("www.csusm.edu","A","144.37.5.45",None,True)
+    rr.add_record("my.csusm.edu","A","144.37.5.150",None,True)
+    rr.add_record("amazone.com","NS","dns.amazone.com",None,True)
+    rr.add_record("dns.amazone.com","A","127.0.0.1",None,True)
+    # add more if your testcases expect them
+
+# ---------- Server logic ----------
+class LocalDNSServer:
+    def __init__(self):
+        self.rr = RRTable()
+        seed_authoritative_csusm(self.rr)
+        self.conn = UDPConnection(timeout=1)
+        self.conn.bind(LOCAL_BIND)
+        self.next_txid = 0
+        # map upstream_txid -> (client_addr, client_txid)
+        self.pending = {}
+
+    def _new_txid(self):
+        tx = self.next_txid & 0xFFFFFFFF
+        self.next_txid = (tx + 1) & 0xFFFFFFFF
+        return tx
+
+    def _answer(self, client_addr, client_txid, name, rtype, ttl, result):
+        resp = {
+            "txid": client_txid,
+            "flag": "0001",
+            "answer": {"name": name, "type": rtype, "ttl": ttl, "result": result}
+        }
+        self.conn.send_message(serialize(resp), client_addr)
+        self.rr.display_table()
+
+    def serve_forever(self):
+        print(f"Local DNS listening on {LOCAL_BIND[0]}:{LOCAL_BIND[1]}")
+        while True:
+            wire, addr = self.conn.receive_message()
+            msg = deserialize(wire)
+            if not isinstance(msg, dict): 
+                continue
+            flag = msg.get("flag")
+            if flag == "0000":
+                self._handle_query_from_client(msg, addr)
+            elif flag == "0001":
+                self._handle_response_from_amazon(msg)
+            # else ignore
+
+    def _handle_query_from_client(self, msg, client_addr):
+        client_txid = msg.get("txid")
+        q = msg.get("question", {})
+        name = q.get("name","")
+        rtype = q.get("type","A")
+
+        # 1) Authoritative check (CSUSM)
+        auth = self.rr.get_record(name, rtype)
+        if auth and auth["static"]==1:
+            self._answer(client_addr, client_txid, name, rtype, DEFAULT_TTL, auth["result"])
             return
-        self.socket.bind(address)
-        self.is_bound = True
 
-    def close(self):
-        """Closes the UDP socket."""
-        self.socket.close()
+        # 2) Cache check
+        if auth and auth["static"]==0:
+            ttl = auth["ttl"] if isinstance(auth["ttl"],int) else DEFAULT_TTL
+            self._answer(client_addr, client_txid, name, rtype, ttl, auth["result"])
+            return
 
+        # 3) Forward to Amazon authoritative
+        upstream_txid = self._new_txid()
+        self.pending[upstream_txid] = (client_addr, client_txid, name, rtype)
+        fwd = {"txid": upstream_txid, "flag":"0000", "question":{"name":name,"type":rtype}}
+        self.conn.send_message(serialize(fwd), AMAZON_ADDR)
+
+    def _handle_response_from_amazon(self, msg):
+        upstream_txid = msg.get("txid")
+        if upstream_txid not in self.pending:
+            return
+        client_addr, client_txid, name, rtype = self.pending.pop(upstream_txid)
+
+        ans = msg.get("answer", {})
+        result = ans.get("result","Record not found")
+        ttl = ans.get("ttl", DEFAULT_TTL)
+
+        # cache only valid results
+        if result != "Record not found":
+            self.rr.add_record(name=name, rtype=rtype, result=result, ttl=int(ttl), is_static=False)
+
+        # forward to original client with their txid
+        self._answer(client_addr, client_txid, name, rtype, ttl, result)
+
+def main():
+    srv = LocalDNSServer()
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("Keyboard interrupt received, exiting...")
+    finally:
+        srv.conn.close()
 
 if __name__ == "__main__":
     main()
